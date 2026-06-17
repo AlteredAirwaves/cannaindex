@@ -1069,9 +1069,6 @@ function SentimentView({ theme }) {
           <div className="ct-meta-row">
             <span className="ct-asof">{sent ? "AS OF " + (sent.asOf || "-").toUpperCase() : "-"}</span>
             {estimate && <span className="ct-badge-est">MODEL ESTIMATE · NO LIVE SEARCH</span>}
-            <button className="ct-refresh" onClick={run} disabled={anyLoading}>
-              {anyLoading ? "REFRESHING…" : "↻ REFRESH"}
-            </button>
           </div>
         </div>
         <div className="ct-gauge-wrap">

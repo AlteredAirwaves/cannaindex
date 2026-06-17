@@ -207,26 +207,31 @@ function fmtAsOf(d) {
   return isNaN(t) ? d : new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-async function tdQuotes(symbols) {
-  if (!TD_KEY || !symbols.length) return {};
+// Pacing gate: enforce ~11s between ANY Twelve Data call (~5/min, safely under the 8/min free limit).
+let _tdLast = 0;
+async function tdGate() {
+  const wait = Math.max(0, 11000 - (Date.now() - _tdLast));
+  if (wait) await new Promise((r) => setTimeout(r, wait));
+  _tdLast = Date.now();
+}
+
+async function tdQuoteOne(symbol) {
+  if (!TD_KEY || !symbol) return null;
+  await tdGate();
   try {
-    const u = TD + "/quote?symbol=" + encodeURIComponent(symbols.join(",")) + "&apikey=" + TD_KEY;
+    const u = TD + "/quote?symbol=" + encodeURIComponent(symbol) + "&apikey=" + TD_KEY;
     const r = await fetch(u);
-    if (!r.ok) return {};
-    const j = await r.json();
-    const out = {};
-    const take = (o) => {
-      if (o && o.symbol && o.close != null && !isNaN(Number(o.close)))
-        out[o.symbol] = { price: Number(o.close), changePct: Number(o.percent_change) };
-    };
-    if (j && j.symbol) take(j);
-    else if (j && typeof j === "object") for (const k of Object.keys(j)) take(j[k]);
-    return out;
-  } catch { return {}; }
+    if (!r.ok) return null;
+    const o = await r.json();
+    if (o && o.close != null && !isNaN(Number(o.close)))
+      return { price: Number(o.close), changePct: Number(o.percent_change) };
+    return null;
+  } catch { return null; }
 }
 
 async function tdSeries(symbol) {
   if (!TD_KEY) return null;
+  await tdGate();
   try {
     const u = TD + "/time_series?symbol=" + encodeURIComponent(symbol) + "&interval=1day&outputsize=30&apikey=" + TD_KEY;
     const r = await fetch(u);
@@ -240,6 +245,15 @@ async function tdSeries(symbol) {
   } catch { return null; }
 }
 
+// Derive price + daily % change from a history's last two closes (no extra API call).
+function quoteFromSeries(series) {
+  if (!series || !Array.isArray(series.points) || series.points.length < 2) return null;
+  const c = series.points.map((p) => p.c);
+  const last = c[c.length - 1], prev = c[c.length - 2];
+  if (!isFinite(last) || !isFinite(prev) || prev === 0) return null;
+  return { price: last, changePct: ((last - prev) / prev) * 100 };
+}
+
 async function readMarketRow() {
   try {
     const u = process.env.SUPABASE_URL + "/rest/v1/ci_cache?section=eq.market&select=content";
@@ -250,17 +264,19 @@ async function readMarketRow() {
   } catch { return null; }
 }
 
-// Overlay real Twelve Data prices onto the (Claude-selected) ticker list + index.
+// Lightweight price overlay via single-symbol quotes (intraday "quotes" mode).
 async function applyRealPrices(market) {
   if (!market || !Array.isArray(market.tickers) || !TD_KEY) return market;
-  const syms = market.tickers.map((t) => t.symbol).filter(Boolean);
-  const idxSym = market.index && market.index.symbol;
-  const q = await tdQuotes(idxSym ? syms.concat([idxSym]) : syms);
-  market.tickers = market.tickers.map((t) => {
-    const r = q[t.symbol];
-    return r ? { ...t, price: r.price, changePct: r.changePct } : t;
-  });
-  if (idxSym && q[idxSym]) market.index = { ...market.index, price: q[idxSym].price, changePct: q[idxSym].changePct };
+  const newTickers = [];
+  for (const t of market.tickers) {
+    const q = await tdQuoteOne(t.symbol);
+    newTickers.push(q ? { ...t, price: q.price, changePct: q.changePct } : t);
+  }
+  market.tickers = newTickers;
+  if (market.index && market.index.symbol) {
+    const iq = await tdQuoteOne(market.index.symbol);
+    if (iq) market.index = { ...market.index, price: iq.price, changePct: iq.changePct };
+  }
   market.pricesAsOf = new Date().toISOString();
   return market;
 }
@@ -308,24 +324,36 @@ export default async function handler(req, res) {
   ]);
 
   let market = market0;
-  try {
-    if (market) { market = await applyRealPrices(market); await upsert("market", market); out.market = "ok"; }
-    else out.market = "empty";
-  } catch (e) { out.market = "error: " + (e && e.message ? e.message : String(e)); }
 
-  // Cache each ticker's real 30-day history so charts are instant + free.
-  // Free tier allows ~8 calls/min, so space these out to avoid throttling.
+  // Fetch each ticker's real 30-day history once (paced through the gate), cache it,
+  // and derive the ticker's price + daily change from that same history (no extra calls).
   if (market && Array.isArray(market.tickers) && TD_KEY) {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const tickers = [];
     for (const t of market.tickers) {
+      let nt = t;
       try {
         const s = await tdSeries(t.symbol);
-        if (s) { await upsert("series_" + t.symbol, s); out["series_" + t.symbol] = "ok"; }
-        else out["series_" + t.symbol] = "empty";
+        if (s) {
+          await upsert("series_" + t.symbol, s);
+          out["series_" + t.symbol] = "ok";
+          const q = quoteFromSeries(s);
+          if (q) nt = { ...t, price: q.price, changePct: q.changePct };
+        } else out["series_" + t.symbol] = "empty";
       } catch (e) { out["series_" + t.symbol] = "error: " + (e && e.message ? e.message : String(e)); }
-      await sleep(8500); // ~7 calls/min, comfortably under the free-tier limit
+      tickers.push(nt);
     }
+    market.tickers = tickers;
+    if (market.index && market.index.symbol) {
+      const iq = await tdQuoteOne(market.index.symbol);
+      if (iq) market.index = { ...market.index, price: iq.price, changePct: iq.changePct };
+    }
+    market.pricesAsOf = new Date().toISOString();
   }
+
+  try {
+    if (market) { await upsert("market", market); out.market = "ok"; }
+    else out.market = "empty";
+  } catch (e) { out.market = "error: " + (e && e.message ? e.message : String(e)); }
 
   await Promise.all([
     step("deskbrief", () => genDeskBrief(sentiment, market, media)),
