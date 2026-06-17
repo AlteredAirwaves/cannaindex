@@ -314,13 +314,16 @@ export default async function handler(req, res) {
   } catch (e) { out.market = "error: " + (e && e.message ? e.message : String(e)); }
 
   // Cache each ticker's real 30-day history so charts are instant + free.
+  // Free tier allows ~8 calls/min, so space these out to avoid throttling.
   if (market && Array.isArray(market.tickers) && TD_KEY) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (const t of market.tickers) {
       try {
         const s = await tdSeries(t.symbol);
         if (s) { await upsert("series_" + t.symbol, s); out["series_" + t.symbol] = "ok"; }
         else out["series_" + t.symbol] = "empty";
       } catch (e) { out["series_" + t.symbol] = "error: " + (e && e.message ? e.message : String(e)); }
+      await sleep(8500); // ~7 calls/min, comfortably under the free-tier limit
     }
   }
 
