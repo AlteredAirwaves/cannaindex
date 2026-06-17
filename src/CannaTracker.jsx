@@ -624,17 +624,9 @@ function SocialPulse({ items }) {
    TICKER BOARD, clickable strip + on-demand price chart
    Series are AI-sourced via web search (indicative, not a feed).
    ============================================================ */
-async function pullSeries(symbol, name) {
-  const base =
-    "You are a markets data assistant. Search the web for the recent daily CLOSING prices of the stock " +
-    symbol + (name ? " (" + name + ")" : "") + " over roughly the last 30 trading days. " +
-    'Schema: {"points":[{"t":"<M/D>","c":<closing price number>}],"asOf":"<Month D, Year>","currency":"<e.g. USD>"}. ' +
-    "Provide 20-30 chronological points, oldest first, using the most accurate recent values you can find.";
-  const j = await pullJSON(base, "Recent daily closes for " + symbol + ".", (v) => v && Array.isArray(v.points) && v.points.length >= 2);
-  if (!j) return null;
-  const pts = j.points.map((p) => ({ t: p.t, c: Number(p.c) })).filter((p) => isFinite(p.c));
-  if (pts.length < 2) return null;
-  return { points: pts, asOf: j.asOf, currency: j.currency || "USD" };
+async function pullSeries(symbol) {
+  // Real 30-day history (Twelve Data), pre-fetched into the cache by the daily refresh.
+  return readCache("series_" + symbol);
 }
 
 function MiniChart({ series }) {
@@ -720,7 +712,7 @@ function TickerBoard({ tickers, sel, onSel }) {
           {cur && cur.data && <MiniChart series={cur.data} />}
         </div>
         <div className="ct-chart-foot">
-          INDICATIVE DAILY CLOSES · AI-SOURCED, MAY BE DELAYED{cur && cur.data && cur.data.asOf ? " · " + cur.data.asOf.toUpperCase() : ""}
+          DAILY CLOSES · MARKET DATA, MAY BE DELAYED{cur && cur.data && cur.data.asOf ? " · " + cur.data.asOf.toUpperCase() : ""}
         </div>
       </div>
     </div>
