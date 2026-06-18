@@ -2343,8 +2343,8 @@ function Style() {
 .ct-mv-name{font-size:12.5px;color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ct-mv-price{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--ink);}
 .ct-mv-val{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;min-width:78px;text-align:right;}
-.ct-spark{flex:0 0 auto;align-self:center;display:block;opacity:.9;}
-@media(max-width:480px){.ct-spark{display:none;}}
+.ct-spark{flex:0 0 auto;align-self:center;display:block;opacity:.9;width:66px;height:22px;}
+@media(max-width:560px){.ct-spark{width:46px;height:20px;}}
 .ct-view-anim{animation:ctViewIn .45s cubic-bezier(.2,.8,.2,1);}
 @keyframes ctViewIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
 @media(prefers-reduced-motion:reduce){.ct-view-anim{animation:none;}}
