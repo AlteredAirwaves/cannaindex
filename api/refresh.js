@@ -336,8 +336,10 @@ export default async function handler(req, res) {
         if (s) {
           await upsert("series_" + t.symbol, s);
           out["series_" + t.symbol] = "ok";
+          const closes = s.points.map((p) => p.c);
+          nt = { ...t, spark: closes };
           const q = quoteFromSeries(s);
-          if (q) nt = { ...t, price: q.price, changePct: q.changePct };
+          if (q) nt = { ...nt, price: q.price, changePct: q.changePct };
         } else out["series_" + t.symbol] = "empty";
       } catch (e) { out["series_" + t.symbol] = "error: " + (e && e.message ? e.message : String(e)); }
       tickers.push(nt);
@@ -355,7 +357,7 @@ export default async function handler(req, res) {
     else out.market = "empty";
   } catch (e) { out.market = "error: " + (e && e.message ? e.message : String(e)); }
 
-  await Promise.all([
+  const results = await Promise.all([
     step("deskbrief", () => genDeskBrief(sentiment, market, media)),
     step("dashboard", genDashboard),
     step("healthcare", genHealthcare),
@@ -363,6 +365,13 @@ export default async function handler(req, res) {
     step("brief_daily", () => genBriefing("daily")),
     step("brief_weekly", () => genBriefing("weekly")),
   ]);
+
+  // Keep the Home gauge in sync with the Markets gauge: both use the sentiment section's score.
+  const dash = results[1];
+  if (dash && sentiment && sentiment.overall) {
+    dash.sentiment = { score: sentiment.overall.score, label: sentiment.overall.label };
+    try { await upsert("dashboard", dash); out.dashboard = "ok+synced"; } catch (e) { /* keep prior */ }
+  }
 
   res.status(200).json({ refreshed: out, mode, at: new Date().toISOString() });
 }
