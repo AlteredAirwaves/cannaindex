@@ -1730,9 +1730,9 @@ const HERO_PHRASES = [
 ];
 function greetingForNow() {
   const h = new Date().getHours(); // visitor's local device time, their timezone
-  if (h < 12) return "Good morning.";
-  if (h < 18) return "Good afternoon.";
-  return "Good evening.";
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function HomeHero({ theme, score, label, date }) {
@@ -1752,9 +1752,9 @@ function HomeHero({ theme, score, label, date }) {
         <span className="ct-live-ph" key={pi}>{HERO_PHRASES[pi]}</span>
       </div>
       <div className="ct-hero-overlay">
-        <div className="ct-eyebrow ct-eyebrow-c"><span className="ct-dot" /> DAILY INTELLIGENCE · {String(date).toUpperCase()}</div>
-        <h2 className="ct-hero-h ct-hero-h-c">{greeting}</h2>
-        <p className="ct-hero-sub ct-hero-sub-c">Where the cannabis, cannabinoid and adjacent markets stand today, and what to watch next.</p>
+        <div className="ct-eyebrow ct-eyebrow-c"><span className="ct-dot" /> {greeting.toUpperCase()} · {String(date).toUpperCase()}</div>
+        <h2 className="ct-hero-h ct-hero-h-c">Cannabis Markets. Decoded.</h2>
+        <p className="ct-hero-sub ct-hero-sub-c">Daily intelligence on cannabis, cannabinoids, healthcare, policy, and capital flows.</p>
         {score != null ? (
           <div className="ct-dash-chip ct-chip-c">
             <span className="ct-dash-chip-num" style={{ color: sentColor(score) }}><CountNum value={score} /></span>
