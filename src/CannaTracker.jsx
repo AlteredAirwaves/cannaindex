@@ -1769,10 +1769,11 @@ function HomeHero({ theme, score, label, date }) {
 /* Sponsored placement — set SPONSOR to null to hide, or fill with a real partner */
 const SPONSOR = {
   label: "SPONSORED",
-  name: "Your brand here",
-  blurb: "Premium placement in front of an engaged audience of cannabis-sector investors and analysts.",
-  cta: "Become a launch partner",
-  url: "#",
+  name: "FloraWorks TruCBN\u2122",
+  blurb:
+    "A clinically studied CBN sleep softgel ready for the CMS Substance Access BEI program, backed by a 1,020-person randomized trial showing significant sleep-quality gains and a full GLP safety package.",
+  cta: "Read the announcement",
+  url: "https://www.newsfilecorp.com/release/291545/FloraWorks-Announces-TruCBNTM-Readiness-for-the-CMS-Substance-Access-BEI-Program-with-Full-Clinical-and-Safety-Substantiation",
 };
 function SponsorSlot() {
   if (!SPONSOR) return null;
