@@ -1699,11 +1699,20 @@ const HERO_PHRASES = [
   "Weighing capital flows",
   "Synthesizing the sector",
 ];
+function greetingForNow() {
+  const h = new Date().getHours(); // visitor's local device time, their timezone
+  if (h < 12) return "Good morning.";
+  if (h < 18) return "Good afternoon.";
+  return "Good evening.";
+}
+
 function HomeHero({ theme, score, label, date }) {
   const [pi, setPi] = useState(0);
+  const [greeting, setGreeting] = useState(greetingForNow());
   useEffect(() => {
     const id = setInterval(() => setPi((p) => (p + 1) % HERO_PHRASES.length), 3400);
-    return () => clearInterval(id);
+    const g = setInterval(() => setGreeting(greetingForNow()), 60000); // keep it correct if the page stays open across noon/6pm
+    return () => { clearInterval(id); clearInterval(g); };
   }, []);
   return (
     <div className="ct-hero-stage">
@@ -1715,7 +1724,7 @@ function HomeHero({ theme, score, label, date }) {
       </div>
       <div className="ct-hero-overlay">
         <div className="ct-eyebrow ct-eyebrow-c"><span className="ct-dot" /> DAILY INTELLIGENCE · {String(date).toUpperCase()}</div>
-        <h2 className="ct-hero-h ct-hero-h-c">Good morning.</h2>
+        <h2 className="ct-hero-h ct-hero-h-c">{greeting}</h2>
         <p className="ct-hero-sub ct-hero-sub-c">Where the cannabis, cannabinoid and adjacent markets stand today, and what to watch next.</p>
         {score != null ? (
           <div className="ct-dash-chip ct-chip-c">
@@ -2191,7 +2200,7 @@ function Style() {
 /* live stat tiles */
 .ct-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:30px;}
 .ct-tile{background:rgba(12,16,12,0.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-  border:1px solid var(--line);border-radius:13px;padding:15px 16px;min-height:96px;
+  border:1px solid var(--line);border-radius:13px;padding:15px 16px;min-height:96px;min-width:0;
   display:flex;flex-direction:column;gap:7px;}
 .ct-tile-skel{animation:sk 1.4s infinite;}
 .ct-tile-label{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.18em;color:var(--ink-faint);}
@@ -2568,6 +2577,10 @@ function Style() {
   .ct-stats{grid-template-columns:1fr 1fr;}
   .ct-constel-band{height:210px;}
   .ct-thread{max-height:46vh;}
+  .ct-topbar{gap:14px;}
+  .ct-topbar-right{width:100%;justify-content:space-between;gap:8px;}
+  .ct-nav{flex:1;min-width:0;}
+  .ct-tab{padding:8px 12px;font-size:10px;letter-spacing:0.06em;}
 }
 /* ===== NEXT-PHASE: nav, dashboard, healthcare, catalysts, briefings, signup ===== */
 .ct-nav{overflow-x:auto;max-width:100%;scrollbar-width:none;}
