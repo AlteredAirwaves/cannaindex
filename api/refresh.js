@@ -15,7 +15,14 @@ export const config = { maxDuration: 300 };
 
 const ANTHROPIC = "https://api.anthropic.com/v1/messages";
 const MODEL = "claude-sonnet-4-6";
-const WEB_TOOL = [{ type: "web_search_20250305", name: "web_search" }];
+
+// COST DIAL. Search results are ~80% of the API bill: each search drags roughly
+// 18k input tokens into context. Without max_uses the model searches until it
+// decides it's done (measured: 4-7 per section). Lower = cheaper, less grounded.
+// Raise to 4-5 if sections start returning thin or stale-sounding content.
+const MAX_SEARCHES = 3;
+
+const WEB_TOOL = [{ type: "web_search_20250305", name: "web_search", max_uses: MAX_SEARCHES }];
 
 const SENT_SCHEMA =
   '{"overall":{"score":<int 0-100>,"label":"<2-3 words>","summary":"<<=20 words>"},' +
@@ -254,6 +261,41 @@ function quoteFromSeries(series) {
   return { price: last, changePct: ((last - prev) / prev) * 100 };
 }
 
+/* ---------- read any cached section (used by quotes mode + weekly gating) ---------- */
+async function readSection(section) {
+  try {
+    const u =
+      process.env.SUPABASE_URL + "/rest/v1/ci_cache?section=eq." +
+      encodeURIComponent(section) + "&select=content,updated_at";
+    const r = await fetch(u, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: "Bearer " + process.env.SUPABASE_SECRET_KEY,
+      },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return rows && rows[0] ? rows[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+// The Weekly Sector Summary covers a week but the full refresh runs daily, so it
+// was being regenerated seven times per week of content. Regenerate on Mondays
+// only — with two safety nets so it can never silently disappear:
+//   1. if it has never been generated, build it now
+//   2. if the cached copy is 6+ days old (missed cron, deploy gap), rebuild it
+// Any other day, the existing row is left untouched and the site keeps serving it.
+async function weeklyDue(force) {
+  if (force) return true;
+  const row = await readSection("brief_weekly");
+  if (!row || !row.content) return true;
+  const age = (Date.now() - Date.parse(row.updated_at)) / 86400000;
+  if (!isFinite(age) || age >= 6) return true;
+  return new Date().getUTCDay() === 1; // Monday
+}
+
 async function readMarketRow() {
   try {
     const u = process.env.SUPABASE_URL + "/rest/v1/ci_cache?section=eq.market&select=content";
@@ -357,13 +399,23 @@ export default async function handler(req, res) {
     else out.market = "empty";
   } catch (e) { out.market = "error: " + (e && e.message ? e.message : String(e)); }
 
+  // brief_weekly is gated: on non-Mondays the cached row is left in place.
+  const force = !!(req.query && (req.query.force === "1" || req.query.force === "true"));
+  const weeklyStep = async () => {
+    if (!(await weeklyDue(force))) {
+      out.brief_weekly = "skipped (not due)";
+      return null;
+    }
+    return step("brief_weekly", () => genBriefing("weekly"));
+  };
+
   const results = await Promise.all([
     step("deskbrief", () => genDeskBrief(sentiment, market, media)),
     step("dashboard", genDashboard),
     step("healthcare", genHealthcare),
     step("catalysts", genCatalysts),
     step("brief_daily", () => genBriefing("daily")),
-    step("brief_weekly", () => genBriefing("weekly")),
+    weeklyStep(),
   ]);
 
   // Keep the Home gauge in sync with the Markets gauge: both use the sentiment section's score.
