@@ -199,6 +199,26 @@ async function upsert(section, content) {
     body: JSON.stringify({ section, content, updated_at: new Date().toISOString() }),
   });
   if (!r.ok) throw new Error("supabase " + r.status + " " + (await r.text()).slice(0, 140));
+  archive(section, content); // best-effort append-only history; never awaited, never throws
+}
+
+// Snapshot a section into ci_history keyed by (section, UTC day). Same-day re-run
+// overwrites that day rather than duplicating. Fire-and-forget: if ci_history does
+// not exist yet, or Supabase hiccups, this silently no-ops and the refresh proceeds.
+async function archive(section, content) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    await fetch(process.env.SUPABASE_URL + "/rest/v1/ci_history", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: "Bearer " + process.env.SUPABASE_SECRET_KEY,
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({ section, day, content }),
+    });
+  } catch { /* history is best-effort */ }
 }
 
 /* ---------- Twelve Data: real market prices + 30-day history ---------- */
