@@ -749,6 +749,108 @@ function TickerBoard({ tickers, sel, onSel }) {
 }
 
 /* ============================================================
+   TICKER LOOKUP — on-demand search over a curated cannabis list.
+   Reads /api/lookup, which is cache-first: a symbol nobody has
+   searched today costs nothing; the first search fetches once and
+   caches, so everyone after is instant. Reuses MiniChart so the
+   result looks identical to the tracked-ticker charts.
+   ============================================================ */
+async function fetchLookup(symbol) {
+  try {
+    const r = await fetch("/api/lookup?symbol=" + encodeURIComponent(symbol));
+    if (!r.ok) return { ok: false, reason: "error" };
+    return await r.json();
+  } catch {
+    return { ok: false, reason: "error" };
+  }
+}
+
+function TickerLookup() {
+  const [q, setQ] = useState("");
+  const [state, setState] = useState(null); // {loading} | {result} | {miss}
+  const lastReq = useRef(0);
+
+  const go = async () => {
+    const sym = q.trim().toUpperCase();
+    if (!sym) return;
+    const req = ++lastReq.current;
+    setState({ loading: true, sym });
+    const res = await fetchLookup(sym);
+    if (req !== lastReq.current) return; // a newer search superseded this one
+    if (res && res.ok) setState({ result: res });
+    else setState({ miss: true, reason: res && res.reason, sym });
+  };
+
+  const onKey = (e) => { if (e.key === "Enter") go(); };
+  const r = state && state.result;
+  const chg = r && typeof r.changePct === "number" ? r.changePct : null;
+
+  return (
+    <div className="ct-lookup">
+      <div className="ct-lookup-bar">
+        <input
+          className="ct-lookup-input"
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={onKey}
+          placeholder="Look up a cannabis ticker — e.g. GTBIF, TLRY, MSOS"
+          maxLength={6}
+          autoCapitalize="characters"
+          spellCheck={false}
+        />
+        <button className="ct-lookup-btn" onClick={go} disabled={!q.trim()}>Search</button>
+      </div>
+
+      {state && state.loading && (
+        <div className="ct-chart-load"><span className="ct-spinner" /> looking up {state.sym}…</div>
+      )}
+
+      {state && state.miss && (
+        <div className="ct-lookup-miss">
+          {state.reason === "not_tracked" ? (
+            <>We don't track <strong>{state.sym}</strong> yet. Coverage is cannabis-sector only for now.</>
+          ) : state.reason === "no_data" ? (
+            <>No market data available for <strong>{state.sym}</strong> right now — it may be a thinly-traded OTC listing.</>
+          ) : (
+            <>Couldn't complete that lookup. Try again in a moment.</>
+          )}
+        </div>
+      )}
+
+      {r && (
+        <div className="ct-chart-card ct-lookup-card">
+          <div className="ct-chart-head">
+            <div className="ct-chart-id">
+              <span className="ct-chart-sym">{r.symbol}</span>
+              <span className="ct-chart-name">{r.name}</span>
+            </div>
+            <div className="ct-chart-quote">
+              <span className="ct-chart-price">{typeof r.price === "number" ? "$" + r.price.toFixed(2) : "—"}</span>
+              {chg != null && (
+                <span className="ct-chart-chg" style={{ color: chg >= 0 ? "var(--pos)" : "var(--neg)" }}>
+                  {chg >= 0 ? "▲ +" : "▼ "}{chg.toFixed(1)}%
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="ct-chart-body">
+            {r.series && r.series.points && r.series.points.length >= 2
+              ? <MiniChart series={r.series} />
+              : <div className="ct-mini-err">Price available, but not enough history for a chart.</div>}
+          </div>
+          <div className="ct-chart-foot">
+            DAILY CLOSES · MARKET DATA, MAY BE DELAYED
+            {r.series && r.series.asOf ? " · " + r.series.asOf.toUpperCase() : ""}
+            {r.cached ? " · CACHED" : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    DESK BRIEF, AI analyst note synthesized from our own signals
    ============================================================ */
 async function pullBrief(ctx) {
@@ -1181,6 +1283,12 @@ function SentimentView({ theme }) {
         {mktLoading && <div className="ct-chart-load"><span className="ct-spinner" /> loading tickers…</div>}
         {mktErr && !mktLoading && <div className="ct-mini-err">Couldn't load the ticker board. <button className="ct-link" onClick={run}>Retry</button></div>}
         {mkt && !mktLoading && <TickerBoard tickers={mkt.tickers} sel={selSym} onSel={setSelSym} />}
+      </section>
+
+      {/* TICKER LOOKUP */}
+      <section className="ct-sec">
+        <SecHead label="TICKER LOOKUP" note="CANNABIS SECTOR" />
+        <TickerLookup />
       </section>
 
       {/* SECTOR MOVERS */}
@@ -2366,6 +2474,23 @@ function Style() {
 .ct-tape-item.on{border-color:var(--accent);background:rgba(155,229,100,0.08);}
 .ct-tape-sym{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12.5px;color:var(--ink);letter-spacing:0.03em;}
 .ct-tape-chg{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;}
+.ct-lookup{display:flex;flex-direction:column;gap:14px;}
+.ct-lookup-bar{display:flex;gap:8px;}
+.ct-lookup-input{flex:1;min-width:0;background:rgba(127,127,127,0.05);border:1px solid var(--line);
+  border-radius:11px;padding:13px 15px;color:var(--ink);font-family:'JetBrains Mono',monospace;
+  font-size:14px;letter-spacing:0.04em;text-transform:uppercase;outline:none;transition:.18s;}
+.ct-lookup-input::placeholder{color:var(--ink-faint);text-transform:none;letter-spacing:0;font-size:13px;}
+.ct-lookup-input:focus{border-color:var(--accent);background:rgba(155,229,100,0.04);}
+.ct-lookup-btn{flex:0 0 auto;border:1px solid var(--accent);background:var(--accent);color:#0a0f0a;
+  border-radius:11px;padding:0 22px;font-family:'JetBrains Mono',monospace;font-size:12px;
+  letter-spacing:0.1em;text-transform:uppercase;font-weight:700;cursor:pointer;transition:.18s;}
+.ct-lookup-btn:disabled{opacity:.4;cursor:default;}
+.ct-lookup-btn:not(:disabled):hover{filter:brightness(1.08);}
+.ct-lookup-miss{border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  color:var(--ink-dim);font-size:13.5px;line-height:1.5;background:rgba(127,127,127,0.03);}
+.ct-lookup-miss strong{color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:13px;}
+.ct-lookup-card{margin-top:2px;}
+
 .ct-chart-card{border:1px solid var(--line);border-radius:14px;padding:18px;background:rgba(12,16,12,0.55);
   backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
 .ct-chart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:6px;}
