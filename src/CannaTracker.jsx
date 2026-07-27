@@ -448,6 +448,19 @@ function getYouTubeId(url) {
 }
 
 /* ---------- next-phase desk pulls (Healthcare, Catalysts, Home, Briefings) ---------- */
+// Header stamp for the movers board: shows when prices were last refreshed
+// (falls back to the section date). Communicates that data is periodic, not live.
+function priceStamp(mkt) {
+  if (!mkt) return "";
+  if (mkt.pricesAsOf) {
+    const t = Date.parse(mkt.pricesAsOf);
+    if (!isNaN(t)) {
+      const time = new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      return "PRICES AS OF " + time.toUpperCase();
+    }
+  }
+  return mkt.asOf ? "AS OF " + mkt.asOf.toUpperCase() : "";
+}
 function fmtDate(s) {
   const t = Date.parse(s);
   if (isNaN(t)) return s || "TBD";
@@ -984,12 +997,16 @@ function Constellation({ tickers, sel, onSel, theme }) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     let raf, W = 0, H = 0, frame = 0, orbs = [];
-    const caps = tickers.map((t) => Number(t.cap) || 1);
+    // Orb size: prefer market cap if present; otherwise fall back to the size of
+    // the price move, which is meaningful on a movers board. (Twelve Data quotes
+    // don't include cap, so post-refactor most tickers use the move fallback.)
+    const weightOf = (t) => Number(t.cap) || (Math.abs(Number(t.changePct) || 0) + 1);
+    const caps = tickers.map(weightOf);
     const maxCap = Math.max(1, ...caps);
 
     function build() {
       orbs = tickers.map((t, i) => {
-        const cap = Number(t.cap) || 1;
+        const cap = weightOf(t);
         const r = 12 + Math.sqrt(cap / maxCap) * 20;
         return {
           t, r,
@@ -1293,10 +1310,13 @@ function SentimentView({ theme }) {
 
       {/* SECTOR MOVERS */}
       <section className="ct-sec">
-        <SecHead label="SECTOR MOVERS" note={mkt ? "AS OF " + (mkt.asOf || "").toUpperCase() : ""} />
+        <SecHead label="SECTOR MOVERS" note={priceStamp(mkt)} />
         {mktLoading && <LoadingRows n={4} />}
         {mktErr && !mktLoading && <div className="ct-mini-err">Couldn't load tickers right now. <button className="ct-link" onClick={run}>Retry</button></div>}
         {mkt && !mktLoading && <SectorMovers tickers={mkt.tickers} sel={selSym} onSel={setSelSym} />}
+        {mkt && !mktLoading && (
+          <div className="ct-mv-note">Prices refresh periodically · search any ticker above for the latest quote</div>
+        )}
       </section>
 
       {/* NEWSROOM */}
@@ -2461,6 +2481,8 @@ function Style() {
 .ct-mv-mid{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:rgba(255,255,255,0.18);}
 .ct-mv-bar{position:absolute;top:0;height:100%;border-radius:6px;transition:width .9s cubic-bezier(.2,.8,.2,1);}
 .ct-mv-driver{margin-top:9px;font-size:12.5px;line-height:1.4;color:var(--ink-dim);}
+.ct-mv-note{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:10px;
+  letter-spacing:0.06em;color:var(--ink-faint);text-align:center;}
 .ct-mv-row{cursor:pointer;}
 .ct-mv-on{border-color:rgba(155,229,100,0.4)!important;background:rgba(16,22,15,0.7)!important;}
 

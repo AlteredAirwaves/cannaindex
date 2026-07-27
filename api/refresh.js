@@ -102,14 +102,55 @@ async function genSentiment() {
   return null;
 }
 
+// Market section, rebuilt. Twelve Data prices and ranks the pool (data);
+// Claude only explains WHY the surfaced movers are moving and names the next
+// catalyst (judgment). Claude no longer invents prices or picks tickers, which
+// removes a redundant, error-prone searched call — the prices it used to
+// generate were overwritten by Twelve Data anyway.
 async function genMarket() {
-  const base =
-    "You are a cannabis-equities analyst. Search the web for today's most active and trending cannabis-sector stocks, U.S. MSOs (e.g. Green Thumb GTBIF, Curaleaf CURLF, Trulieve TCNNF, Cresco CRLBF, Verano VRNOF), ETFs (MSOS, MJ), and Canadian LPs (Tilray TLRY, Canopy CGC, Aurora ACB). " +
-    'Schema: {"tickers":[{"symbol":"<TICKER>","name":"<short name>","price":<number USD>,"changePct":<number, today % change, negative if down>,"cap":<approx market cap in billions USD, number>,"driver":"<<=8 words>"}],' +
-    '"index":{"symbol":"MSOS","name":"<ETF name>","price":<number>,"changePct":<number>},' +
-    '"catalyst":{"label":"<next sector catalyst, <=6 words>","date":"<YYYY-MM-DD>"},"asOf":"<Month D, Year>"}. ' +
-    "Return exactly 6 tickers, biggest movers first, with real recent values. The index is the leading U.S. cannabis ETF. The catalyst is the next known market-moving event (e.g. a DEA hearing, earnings, a vote).";
-  return pullJSON(base, "Today's trending cannabis stocks, sector index, and next catalyst.", (v) => v && Array.isArray(v.tickers) && v.tickers.length);
+  const pool = await buildPricedPool();
+
+  // Fallback: if Twelve Data is unreachable, fall back to the old model-driven
+  // path so the section still renders rather than disappearing.
+  if (!pool || !pool.movers.length) {
+    const base =
+      "You are a cannabis-equities analyst. Search the web for today's most active cannabis-sector stocks " +
+      "(U.S. MSOs like GTBIF, CURLF, TCNNF, CRLBF; ETFs like MSOS; Canadian LPs like TLRY, CGC, ACB). " +
+      'Schema: {"tickers":[{"symbol":"<T>","name":"<short name>","price":<num>,"changePct":<num>,"driver":"<<=8 words>"}],' +
+      '"index":{"symbol":"MSOS","name":"<ETF name>","price":<num>,"changePct":<num>},' +
+      '"catalyst":{"label":"<next catalyst, <=6 words>","date":"<YYYY-MM-DD>"},"asOf":"<Month D, Year>"}. ' +
+      "Return exactly 6 tickers, biggest movers first.";
+    return pullJSON(base, "Today's trending cannabis stocks and next catalyst.",
+      (v) => v && Array.isArray(v.tickers) && v.tickers.length);
+  }
+
+  // Ask Claude ONLY for the driver blurbs (keyed by symbol) and the catalyst.
+  // Prices/ranking are already decided. This is a small, cheap generation.
+  const list = pool.movers.map((m) => m.symbol + " (" + m.name + ", " + (m.changePct >= 0 ? "+" : "") + Number(m.changePct).toFixed(1) + "%)").join("; ");
+  const annPrompt =
+    "You are a cannabis-equities analyst. These are today's top-moving cannabis stocks with their real % change: " +
+    list + ". Search the web for the reason each is moving today, and identify the next known sector catalyst. " +
+    'Return ONLY JSON: {"drivers":{"<SYMBOL>":"<why it moved, <=8 words>"},' +
+    '"catalyst":{"label":"<next sector catalyst, <=6 words>","date":"<YYYY-MM-DD>"}}. ' +
+    "A driver for every symbol listed. No prices, no extra keys.";
+
+  const ann = await pullJSON(annPrompt, "Why today's cannabis movers are moving, and the next catalyst.",
+    (v) => v && v.drivers && typeof v.drivers === "object");
+
+  const drivers = (ann && ann.drivers) || {};
+  const tickers = pool.movers.map((m) => ({
+    ...m,
+    driver: drivers[m.symbol] || "",
+  }));
+
+  return {
+    tickers,
+    index: pool.index || null,
+    catalyst: (ann && ann.catalyst) || null,
+    priced: pool.priced,           // full ranked pool → powers on-demand lookup cache
+    asOf: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+    pricesAsOf: new Date().toISOString(),
+  };
 }
 
 async function genMedia() {
@@ -255,6 +296,119 @@ async function tdQuoteOne(symbol) {
     return null;
   } catch { return null; }
 }
+
+// Batched quotes. Twelve Data's /quote accepts a comma-separated symbol list
+// (confirmed available on this account), returning an object keyed by symbol.
+// This lets us price the whole ~26-name pool in a couple of calls instead of
+// one-at-a-time, so it fits well inside the function's time budget. We still
+// pass through tdGate between batches to respect the 8-req/min ceiling.
+const QUOTE_BATCH = 8; // symbols per call; keep modest so no single URL is huge
+
+async function tdQuotesBatch(symbols) {
+  const out = {};
+  if (!TD_KEY || !symbols || !symbols.length) return out;
+
+  for (let i = 0; i < symbols.length; i += QUOTE_BATCH) {
+    const chunk = symbols.slice(i, i + QUOTE_BATCH);
+    await tdGate();
+    try {
+      const u = TD + "/quote?symbol=" + encodeURIComponent(chunk.join(",")) + "&apikey=" + TD_KEY;
+      const r = await fetch(u);
+      if (!r.ok) continue;
+      const j = await r.json();
+      // A single-symbol response is a bare object; a multi-symbol response is
+      // keyed by symbol. Normalize both into `out`.
+      const rows = chunk.length === 1 ? { [chunk[0]]: j } : j;
+      for (const sym of chunk) {
+        const o = rows && rows[sym];
+        if (o && o.close != null && !isNaN(Number(o.close))) {
+          out[sym] = { price: Number(o.close), changePct: Number(o.percent_change) };
+        }
+      }
+    } catch { /* skip this chunk, keep whatever we have */ }
+  }
+  return out;
+}
+
+// The curated cannabis pool we price every refresh. Ranking these by movement
+// is what surfaces the "movers" board; caching them all makes on-demand lookup
+// free. Keep in sync with the ALLOW map in api/lookup.js. Dead OTC symbols
+// (verified via scripts/td-probe.mjs) are intentionally omitted.
+const POOL = [
+  { symbol: "GTBIF", name: "Green Thumb Industries" },
+  { symbol: "TCNNF", name: "Trulieve Cannabis" },
+  { symbol: "CURLF", name: "Curaleaf Holdings" },
+  { symbol: "CRLBF", name: "Cresco Labs" },
+  { symbol: "TSNDF", name: "TerrAscend" },
+  { symbol: "AYRWF", name: "Ayr Wellness" },
+  { symbol: "GLASF", name: "Glass House Brands" },
+  { symbol: "TLRY", name: "Tilray Brands" },
+  { symbol: "CGC", name: "Canopy Growth" },
+  { symbol: "ACB", name: "Aurora Cannabis" },
+  { symbol: "CRON", name: "Cronos Group" },
+  { symbol: "OGI", name: "Organigram Holdings" },
+  { symbol: "SNDL", name: "SNDL Inc." },
+  { symbol: "VFF", name: "Village Farms" },
+  { symbol: "MSOS", name: "AdvisorShares Pure US Cannabis ETF" },
+  { symbol: "MSOX", name: "AdvisorShares MSOS 2x Daily ETF" },
+  { symbol: "YOLO", name: "AdvisorShares Pure Cannabis ETF" },
+  { symbol: "CNBS", name: "Amplify Seymour Cannabis ETF" },
+  { symbol: "IIPR", name: "Innovative Industrial Properties" },
+  { symbol: "SMG", name: "Scotts Miracle-Gro" },
+  { symbol: "GRWG", name: "GrowGeneration" },
+  { symbol: "HYFM", name: "Hydrofarm Holdings" },
+  { symbol: "AGFY", name: "Agrify" },
+  { symbol: "JAZZ", name: "Jazz Pharmaceuticals" },
+  { symbol: "GTII", name: "Green Thumb (alt listing)" },
+  { symbol: "MRMD", name: "MariMed" },
+];
+
+const INDEX_SYMBOL = "MSOS"; // the sector proxy shown as the headline index
+const MOVERS_SHOWN = 6;
+
+// Price the whole pool, rank by absolute % move, and shape the top movers to
+// match the existing front-end contract (symbol, name, price, changePct, cap?).
+// Returns { movers, priced, index } or null if Twelve Data gave us nothing.
+async function buildPricedPool() {
+  if (!TD_KEY) return null;
+  const symbols = POOL.map((p) => p.symbol);
+  const quotes = await tdQuotesBatch(symbols);
+
+  const priced = POOL
+    .filter((p) => quotes[p.symbol])
+    .map((p) => ({
+      symbol: p.symbol,
+      name: p.name,
+      price: quotes[p.symbol].price,
+      changePct: quotes[p.symbol].changePct,
+    }));
+
+  if (!priced.length) return null;
+
+  // Rank by absolute % move, but guard against two mechanical-ranking artifacts
+  // that a human picker would skip:
+  //   - sub-$0.15 pennies, where a 1-cent tick is a huge % and pure noise
+  //   - implausible one-day swings (>35%), usually splits/reverse-splits, not news
+  // These still get priced and cached (searchable); they just don't hijack the
+  // movers board. Falls back to the unfiltered set if the guard leaves too few.
+  const rankable = priced.filter(
+    (p) => p.price >= 0.15 && Math.abs(p.changePct || 0) <= 35
+  );
+  const pickFrom = rankable.length >= MOVERS_SHOWN ? rankable : priced;
+
+  const movers = pickFrom
+    .slice()
+    .sort((a, b) => Math.abs(b.changePct || 0) - Math.abs(a.changePct || 0))
+    .slice(0, MOVERS_SHOWN);
+
+  const idx = quotes[INDEX_SYMBOL];
+  const index = idx
+    ? { symbol: INDEX_SYMBOL, name: "AdvisorShares Pure US Cannabis ETF", price: idx.price, changePct: idx.changePct }
+    : null;
+
+  return { movers, priced, index };
+}
+
 
 async function tdSeries(symbol) {
   if (!TD_KEY) return null;
@@ -412,6 +566,24 @@ export default async function handler(req, res) {
       if (iq) market.index = { ...market.index, price: iq.price, changePct: iq.changePct };
     }
     market.pricesAsOf = new Date().toISOString();
+  }
+
+  // Warm the on-demand lookup cache for the WHOLE priced pool, not just the
+  // shown movers. buildPricedPool already fetched these quotes, so this only
+  // writes them — no extra Twelve Data calls. Any pool symbol a visitor
+  // searches then returns instantly and free.
+  if (market && Array.isArray(market.priced)) {
+    for (const p of market.priced) {
+      try {
+        await upsert("lookup_" + p.symbol, {
+          symbol: p.symbol, name: p.name,
+          price: p.price, changePct: p.changePct,
+          series: null,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch { /* best-effort */ }
+    }
+    delete market.priced;
   }
 
   try {
